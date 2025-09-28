@@ -1,5 +1,6 @@
 package wave_adder
 
+import "core:fmt"
 import "core:math"
 import rl "vendor:raylib"
 
@@ -7,6 +8,74 @@ BACKGROUND_COLOR :: rl.Color{ 0x18, 0x18, 0x18, 0xFF }
 UI_BACKGROUND_COLOR :: rl.BLACK
 UI_FOREGROUND_COLOR :: rl.WHITE
 UI_BORDER_COLOR :: rl.GRAY
+UI_ACTIVE_BORDER_COLOR :: rl.BLUE
+UI_BUTTON_COLOR :: rl.Color{ 0x24, 0x24, 0x3A, 0xFF }
+UI_FONT_SIZE :: 24
+UI_LABEL_FONT_SIZE :: 18
+
+scroll_control :: proc(bounds: rl.Rectangle, var: ^f32, sensitivity: f32 = 1.0) -> bool {
+    @static active_var: ^f32
+    @static last_mouse_pos: rl.Vector2
+    mouse := rl.GetMousePosition()
+    if active_var == nil && rl.CheckCollisionPointRec(mouse, bounds) && rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
+        active_var = var
+
+        last_mouse_pos = mouse
+        rl.DisableCursor()
+    }
+    if active_var == var {
+        var^ += rl.GetMouseDelta().x * sensitivity
+        rl.SetMousePosition(auto_cast last_mouse_pos.x, auto_cast last_mouse_pos.y)
+        
+        if rl.IsMouseButtonReleased(rl.MouseButton.LEFT) {
+            active_var = nil
+            
+            rl.EnableCursor()
+            rl.SetMousePosition(auto_cast last_mouse_pos.x, auto_cast last_mouse_pos.y)
+        }
+        return true
+    }
+    return false
+}
+
+number_scroll_input :: proc(bounds: rl.Rectangle, var: ^f32) {
+    is_active := scroll_control(bounds, var, 0.1)
+    rl.DrawRectangleRec(bounds, UI_BACKGROUND_COLOR)
+    rl.DrawRectangleLinesEx(bounds, 1, is_active ? UI_ACTIVE_BORDER_COLOR : UI_BORDER_COLOR)
+    num_text := rl.TextFormat("%.2f", var^)
+    rl.DrawText(
+        num_text, 
+        auto_cast (bounds.x + bounds.width/2) - rl.MeasureText(num_text, UI_FONT_SIZE)/2, 
+        auto_cast (bounds.y + bounds.height/2 - auto_cast UI_FONT_SIZE * 0.4),
+        UI_FONT_SIZE, UI_FOREGROUND_COLOR)
+}
+
+angle_scroll_input :: proc(position: rl.Vector2, size: f32, var: ^f32) {
+    is_active := scroll_control(rl.Rectangle{ position.x, position.y, size, size }, var, 0.1)
+    var^ = math.mod(var^, 2*math.PI)
+    if var^ < 0 {
+        var^ += 2*math.PI
+    }
+    radius := size/2
+    center := position + radius
+    rl.DrawCircleV(center, radius, UI_BACKGROUND_COLOR)
+    vec := rl.Vector2Rotate(rl.Vector2{ 0, -1 }, var^) * radius
+    rl.DrawLineEx(center, center + vec, 3, UI_FOREGROUND_COLOR)
+    rl.DrawCircleLinesV(center, radius, is_active ? UI_ACTIVE_BORDER_COLOR : UI_BORDER_COLOR)
+}
+
+button :: proc(bounds: rl.Rectangle, text: cstring) -> bool {
+    is_hovering := rl.CheckCollisionPointRec(rl.GetMousePosition(), bounds)
+    rl.DrawRectangleRec(bounds, UI_BUTTON_COLOR)
+    rl.DrawRectangleLinesEx(bounds, 1, is_hovering && rl.IsMouseButtonDown(.LEFT) ? UI_ACTIVE_BORDER_COLOR : UI_BORDER_COLOR)
+    rl.DrawText(
+        text, 
+        auto_cast (bounds.x + bounds.width/2) - rl.MeasureText(text, UI_FONT_SIZE)/2, 
+        auto_cast (bounds.y + bounds.height/2 - auto_cast UI_FONT_SIZE * 0.4),
+        UI_FONT_SIZE, rl.WHITE)
+    return rl.IsMouseButtonReleased(.LEFT) && is_hovering
+}
+
 
 Wave :: struct {
     frequency: f32,
@@ -54,86 +123,40 @@ draw_wave :: proc(bounds: rl.Rectangle, sample_proc: proc(t: f32, params: rawptr
     rl.DrawRectangleLinesEx(bounds, 1, UI_BORDER_COLOR)
 }
 
-scroll_control :: proc(bounds: rl.Rectangle, var: ^f32, sensitivity: f32 = 1.0) {
-    @static active_var: ^f32
-    @static last_mouse_pos: rl.Vector2
-    mouse := rl.GetMousePosition()
-    if active_var == nil && rl.CheckCollisionPointRec(mouse, bounds) && rl.IsMouseButtonDown(rl.MouseButton.LEFT) {
-        active_var = var
-
-        last_mouse_pos = mouse
-        rl.DisableCursor()
-    }
-    if active_var == var {
-        var^ += rl.GetMouseDelta().x * sensitivity
-        rl.SetMousePosition(auto_cast last_mouse_pos.x, auto_cast last_mouse_pos.y)
-        
-        if rl.IsMouseButtonReleased(rl.MouseButton.LEFT) {
-            active_var = nil
-            
-            rl.EnableCursor()
-            rl.SetMousePosition(auto_cast last_mouse_pos.x, auto_cast last_mouse_pos.y)
-        }
-    }
-}
-
-number_scroll_input :: proc(bounds: rl.Rectangle, var: ^f32) {
-    scroll_control(bounds, var, 0.1)
-    rl.DrawRectangleRec(bounds, UI_BACKGROUND_COLOR)
-    rl.DrawRectangleLinesEx(bounds, 1, UI_BORDER_COLOR)
-    num_text := rl.TextFormat("%.2f", var^)
-    FONT_SIZE_SCALE :: 0.8
-    font_size := i32(FONT_SIZE_SCALE * bounds.height)
-    rl.DrawText(
-        num_text, 
-        auto_cast (bounds.x + bounds.width/2) - rl.MeasureText(num_text, font_size)/2, 
-        auto_cast (bounds.y + bounds.height/2 - auto_cast font_size * 0.4),
-        font_size, rl.WHITE)
-}
-
-angle_scroll_input :: proc(position: rl.Vector2, size: f32, var: ^f32) {
-    scroll_control(rl.Rectangle{ position.x, position.y, size, size }, var, 0.1)
-    var^ = math.mod(var^, 2*math.PI)
-    if var^ < 0 {
-        var^ += 2*math.PI
-    }
-    radius := size/2
-    center := position + radius
-    rl.DrawCircleV(center, radius, UI_BACKGROUND_COLOR)
-    vec := rl.Vector2Rotate(rl.Vector2{ 0, -1 }, var^) * radius
-    rl.DrawLineEx(center, center + vec, 3, UI_FOREGROUND_COLOR)
-    rl.DrawCircleLinesV(center, radius, UI_BORDER_COLOR)
-}
-
 wave_editor :: proc(wave: ^Wave, bounds: rl.Rectangle, cycle_width: f32 = 1.0, amplitutde_scale: f32 = 1.0) {
     GAP :: 10.0
-    LABEL_FONT_SIZE :: 18
-
+    
     controls_width := 2 * bounds.height
     controls_left_width := (2.0/3.0) * controls_width
     controls_right_width := controls_width - controls_left_width - GAP
-    left_controls_height := bounds.height/2 - GAP/2 - LABEL_FONT_SIZE
+    left_controls_height := bounds.height/2 - GAP/2 - UI_LABEL_FONT_SIZE
 
-    rl.DrawText("Frequency", auto_cast bounds.x, auto_cast bounds.y, LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
+    rl.DrawText("Frequency", auto_cast bounds.x, auto_cast bounds.y, UI_LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
     number_scroll_input(
         rl.Rectangle{ 
             bounds.x, 
-            bounds.y + auto_cast LABEL_FONT_SIZE, 
+            bounds.y + auto_cast UI_LABEL_FONT_SIZE, 
             controls_left_width, 
             left_controls_height }, 
         &wave.frequency)
 
-    rl.DrawText("Amplitude", auto_cast bounds.x, auto_cast (bounds.y + GAP + left_controls_height) + LABEL_FONT_SIZE, LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
+    rl.DrawText("Amplitude", auto_cast bounds.x, auto_cast (bounds.y + GAP + left_controls_height) + UI_LABEL_FONT_SIZE, UI_LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
     number_scroll_input(
         rl.Rectangle{ 
             bounds.x, 
-            bounds.y + auto_cast 2 * LABEL_FONT_SIZE + GAP + left_controls_height, 
+            bounds.y + auto_cast 2 * UI_LABEL_FONT_SIZE + GAP + left_controls_height, 
             controls_left_width, 
             left_controls_height }, 
         &wave.amplitutde)
     
-    rl.DrawText("Phase", auto_cast (bounds.x + controls_left_width + GAP), auto_cast bounds.y, LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
-    angle_scroll_input(rl.Vector2{ bounds.x + controls_left_width + GAP, bounds.y + LABEL_FONT_SIZE }, controls_right_width, &wave.phase)
+    rl.DrawText("Phase", auto_cast (bounds.x + controls_left_width + GAP), auto_cast bounds.y, UI_LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
+    angle_scroll_input(rl.Vector2{ bounds.x + controls_left_width + GAP, bounds.y + UI_LABEL_FONT_SIZE }, controls_right_width, &wave.phase)
+    phase_text := rl.TextFormat("%.2f rad", wave.phase)
+    rl.DrawText(
+        phase_text, 
+        auto_cast (bounds.x + controls_left_width + GAP + controls_right_width/2 - auto_cast rl.MeasureText(phase_text, UI_LABEL_FONT_SIZE)/2), 
+        auto_cast (bounds.y + UI_LABEL_FONT_SIZE + 5 + controls_right_width), 
+        UI_LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
     
     HUE_BAR_WIDTH :: 10
     wave_bounds := bounds
@@ -162,23 +185,30 @@ main :: proc() {
     rl.SetWindowState(rl.ConfigFlags{.WINDOW_RESIZABLE, .WINDOW_ALWAYS_RUN})
 
     default_wave := Wave{
-        amplitutde=30,
+        amplitutde=10,
         frequency=200,
         phase=0,
     }
-    waves := [?]Wave{ 0..<3 = default_wave }
+    // waves := [?]Wave{ 0..<3 = default_wave }
+    waves: [dynamic]Wave = {default_wave}
 
     for !rl.WindowShouldClose() {
         width := cast(f32) rl.GetRenderWidth()
         height := cast(f32) rl.GetRenderHeight()
-        PADDING :: 10.0
-
+        PADDING :: 10
+        
         rl.BeginDrawing()
-
+        
         rl.ClearBackground(BACKGROUND_COLOR)
+        
+        TOP_BAR_HEIGHT :: 40
+        if button({ PADDING, PADDING, 150, TOP_BAR_HEIGHT }, "+ Wave") {
+            append(&waves, default_wave)
+        }
+
         WAVE_HEIGHT :: 100.0
         for &wave, i in waves {
-            wave_editor(&wave, rl.Rectangle{ PADDING, PADDING + auto_cast i*(WAVE_HEIGHT + PADDING), width - 2*PADDING, WAVE_HEIGHT }, 10000)
+            wave_editor(&wave, rl.Rectangle{ PADDING, 2*PADDING + TOP_BAR_HEIGHT + auto_cast i*(WAVE_HEIGHT + PADDING), width - 2*PADDING, WAVE_HEIGHT }, 10000)
         }
 
         waves_slice := waves[:]
