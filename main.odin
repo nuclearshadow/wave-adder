@@ -73,11 +73,11 @@ scroll_control :: proc(bounds: rl.Rectangle, var: ^f32, sensitivity: f32 = 1.0) 
     return false
 }
 
-number_scroll_input :: proc(bounds: rl.Rectangle, var: ^f32) {
-    is_active := scroll_control(bounds, var, 0.1)
+number_scroll_input :: proc(bounds: rl.Rectangle, var: ^f32, sensitivity: f32 = 0.1) {
+    is_active := scroll_control(bounds, var, sensitivity)
     rl.DrawRectangleRec(bounds, UI_BACKGROUND_COLOR)
     rl.DrawRectangleLinesEx(bounds, 1, is_active ? UI_ACTIVE_BORDER_COLOR : UI_BORDER_COLOR)
-    num_text := rl.TextFormat("%.2f", var^)
+    num_text := rl.TextFormat("%.3f", var^)
     rl.DrawText(
         num_text, 
         auto_cast (bounds.x + bounds.width/2) - rl.MeasureText(num_text, UI_FONT_SIZE)/2, 
@@ -219,7 +219,7 @@ wave_editor :: proc(wave: ^Wave, bounds: rl.Rectangle, cycle_width: f32 = 1.0, a
             bounds.y + auto_cast 2 * UI_LABEL_FONT_SIZE + GAP + left_controls_height, 
             controls_left_width, 
             left_controls_height }, 
-        &wave.amplitutde)
+        &wave.amplitutde, 0.01)
     
     rl.DrawText("Phase", auto_cast (bounds.x + controls_left_width + GAP), auto_cast bounds.y, UI_LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
     angle_scroll_input(rl.Vector2{ bounds.x + controls_left_width + GAP, bounds.y + UI_LABEL_FONT_SIZE }, controls_right_width, &wave.phase)
@@ -267,21 +267,45 @@ delete_button :: proc(bounds: rl.Rectangle) -> bool {
     return button_res
 }
 
+generate_audio_wave :: proc(buffer: []f32, sample_proc: proc(t: f32, params: rawptr) -> f32, sample_proc_params: rawptr, sample_rate: u32 = 44_100) -> rl.Wave {
+    for &sample, i in buffer {
+        sample = sample_proc(cast(f32)i / cast(f32)sample_rate, sample_proc_params)
+    }
+
+    return rl.Wave{
+        frameCount = cast(u32)len(buffer),
+        sampleRate = sample_rate,
+        sampleSize = 32,
+        channels = 1,
+        data = raw_data(buffer),
+    }
+}
+
+play_waves_sum :: proc(buffer: []f32, waves: []Wave) {
+    local_waves := waves // Have to do this because can't take pointer of proc param
+    audio_wave := generate_audio_wave(buffer, sample_waves_sum, &local_waves)
+    sound := rl.LoadSoundFromWave(audio_wave)
+    rl.PlaySound(sound)
+}
+
 main :: proc() {
     rl.InitWindow(800, 600, "Wave Adder")
     defer rl.CloseWindow()
 
     rl.SetWindowState(rl.ConfigFlags{.WINDOW_RESIZABLE, .WINDOW_ALWAYS_RUN})
 
+    rl.InitAudioDevice()
+    defer rl.CloseAudioDevice()
+
     default_wave := Wave{
-        amplitutde=10,
-        frequency=200,
+        amplitutde=1,
+        frequency=440,
         phase=0,
     }
     waves: [dynamic]Wave = {}
     // square wave
-    freq: f32 = 50.0
-    amp: f32 = 40
+    freq: f32 = 440.0
+    amp: f32 = 1
     for i in 0..<10 {
         append(&waves, Wave{
             frequency = freq * (auto_cast i*2.0 + 1),
@@ -290,6 +314,10 @@ main :: proc() {
         })
     }
 
+    samples_buffer: [44_100]f32
+
+    cycle_width: f32 = 50000
+    amp_scale: f32 = 40
     scroll_offset: f32 = 0.0
     for !rl.WindowShouldClose() {
         width := cast(f32) rl.GetRenderWidth()
@@ -313,12 +341,15 @@ main :: proc() {
         waves_rect := rl.Rectangle{ PADDING, waves_rect_top, auto_cast width - 2*PADDING, waves_rect_height }
         push_scissor(waves_rect)
         for &wave, i in waves {
-            DELETE_BUTTON_WIDTH :: 30
-            wave_rect := rl.Rectangle{ PADDING, waves_rect_top + auto_cast i*(WAVE_HEIGHT + PADDING) - scroll_offset, width - 4*PADDING - DELETE_BUTTON_WIDTH - SCROLL_BAR_WIDTH, WAVE_HEIGHT }
-            wave_editor(&wave, wave_rect, 10000)
+            DELETE_BTN_WIDTH :: 30
+            wave_rect := rl.Rectangle{ 
+                PADDING, waves_rect_top + auto_cast i*(WAVE_HEIGHT + PADDING) - scroll_offset, 
+                width - 4*PADDING - DELETE_BTN_WIDTH - SCROLL_BAR_WIDTH, WAVE_HEIGHT 
+            }
+            wave_editor(&wave, wave_rect, cycle_width, amp_scale)
             delete_rect := rl.Rectangle{ 
                 wave_rect.x + wave_rect.width + PADDING, wave_rect.y, 
-                DELETE_BUTTON_WIDTH, wave_rect.height 
+                DELETE_BTN_WIDTH, wave_rect.height 
             }
             if delete_button(delete_rect) {
                 // NOTE: Normally you shouldn't remove an element while iterating but this works just fine for some reason
@@ -335,7 +366,13 @@ main :: proc() {
         verticle_scroll_bar({ width - PADDING - SCROLL_BAR_WIDTH, waves_rect_top, SCROLL_BAR_WIDTH, waves_rect_height }, total_waves_height, &scroll_offset)
 
         waves_slice := waves[:]
-        draw_wave({ PADDING, height - PADDING - WAVE_HEIGHT, width - 2*PADDING, WAVE_HEIGHT }, sample_waves_sum, &waves_slice, rl.WHITE, 10000)
+        
+        PLAY_BTN_WIDTH :: 100
+        if button({ PADDING, height - PADDING - WAVE_HEIGHT, PLAY_BTN_WIDTH, WAVE_HEIGHT }, "|> Play") {
+            play_waves_sum(samples_buffer[:], waves_slice)
+        }
+
+        draw_wave({ 2*PADDING + PLAY_BTN_WIDTH, height - PADDING - WAVE_HEIGHT, width - 3*PADDING - PLAY_BTN_WIDTH, WAVE_HEIGHT }, sample_waves_sum, &waves_slice, rl.WHITE, cycle_width, amp_scale)
         
         rl.EndDrawing()
     }
