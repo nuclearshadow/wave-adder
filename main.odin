@@ -85,8 +85,8 @@ number_scroll_input :: proc(bounds: rl.Rectangle, var: ^f32, sensitivity: f32 = 
         UI_FONT_SIZE, UI_FOREGROUND_COLOR)
 }
 
-angle_scroll_input :: proc(position: rl.Vector2, size: f32, var: ^f32) {
-    is_active := scroll_control(rl.Rectangle{ position.x, position.y, size, size }, var, 0.1)
+angle_scroll_input :: proc(position: rl.Vector2, size: f32, var: ^f32, sensitivity: f32 = 0.05*math.PI) {
+    is_active := scroll_control(rl.Rectangle{ position.x, position.y, size, size }, var, sensitivity)
     var^ = math.mod(var^, 2*math.PI)
     if var^ < 0 {
         var^ += 2*math.PI
@@ -161,12 +161,12 @@ Wave :: struct {
     hue: f32,
 }
 
-sample_wave :: proc(t: f32, params: rawptr) -> f32 {
+sample_wave :: proc "contextless" (t: f64, params: rawptr) -> f32 {
     wave := cast(^Wave)params
-    return math.sin(2 * math.PI * wave.frequency * t + wave.phase) * wave.amplitutde
+    return cast(f32)math.sin(2 * math.PI * f64(wave.frequency) * t + f64(wave.phase)) * wave.amplitutde
 }
 
-sample_waves_sum :: proc(t: f32, params: rawptr) -> f32 {
+sample_waves_sum :: proc "contextless" (t: f64, params: rawptr) -> f32 {
     waves := cast(^[]Wave)params
     sum: f32 = 0
     for &wave in waves {
@@ -175,16 +175,16 @@ sample_waves_sum :: proc(t: f32, params: rawptr) -> f32 {
     return sum
 }
 
-draw_wave :: proc(bounds: rl.Rectangle, sample_proc: proc(t: f32, params: rawptr) -> f32, sample_proc_params: rawptr, wave_color: rl.Color, cycle_width: f32 = 1.0, amplitutde_scale: f32 = 1.0) {
+draw_wave :: proc(bounds: rl.Rectangle, sample_proc: proc"contextless"(t: f64, params: rawptr) -> f32, sample_proc_params: rawptr, wave_color: rl.Color, cycle_width: f32 = 1.0, amplitutde_scale: f32 = 1.0) {
     rl.DrawRectangleRec(bounds, UI_BACKGROUND_COLOR)
     SAMPLE_INTERVAL :: 0.5
     freq_scale := 1 / cycle_width
     x: f32 = 0.0
     push_scissor(bounds)
     for x < bounds.width {
-        y := sample_proc(x * freq_scale, sample_proc_params) * amplitutde_scale
+        y := sample_proc(f64(x * freq_scale), sample_proc_params) * amplitutde_scale
         x2 := math.min(x + SAMPLE_INTERVAL, bounds.width)
-        y2 := sample_proc(x2 * freq_scale, sample_proc_params) * amplitutde_scale
+        y2 := sample_proc(f64(x2 * freq_scale), sample_proc_params) * amplitutde_scale
         rl.DrawLineV(
             rl.Vector2{bounds.x + x,  bounds.y + 0.5 * bounds.height - y }, 
             rl.Vector2{bounds.x + x2, bounds.y + 0.5 * bounds.height - y2}, 
@@ -267,9 +267,9 @@ delete_button :: proc(bounds: rl.Rectangle) -> bool {
     return button_res
 }
 
-generate_audio_wave :: proc(buffer: []f32, sample_proc: proc(t: f32, params: rawptr) -> f32, sample_proc_params: rawptr, sample_rate: u32 = 44_100) -> rl.Wave {
+generate_audio_wave :: proc(buffer: []f32, sample_proc: proc"contextless"(t: f64, params: rawptr) -> f32, sample_proc_params: rawptr, sample_rate: u32 = 44_100) -> rl.Wave {
     for &sample, i in buffer {
-        sample = sample_proc(cast(f32)i / cast(f32)sample_rate, sample_proc_params)
+        sample = sample_proc(cast(f64)i / cast(f64)sample_rate, sample_proc_params)
     }
 
     return rl.Wave{
@@ -288,6 +288,21 @@ play_waves_sum :: proc(buffer: []f32, waves: []Wave) {
     rl.PlaySound(sound)
 }
 
+SAMPLE_RATE :: 44100
+
+waves: [dynamic]Wave = {}
+play_head: f64 = 0
+
+audio_stream_callback :: proc "c" (bufferData: rawptr, frames: u32) {
+    buffer := cast([^]f32) bufferData
+    
+    waves_slice := waves[:]
+    for i in 0..<frames {
+        buffer[i] = sample_waves_sum(play_head + auto_cast i / SAMPLE_RATE, &waves_slice)
+    }
+    play_head += auto_cast frames / SAMPLE_RATE
+}
+
 main :: proc() {
     rl.InitWindow(800, 600, "Wave Adder")
     defer rl.CloseWindow()
@@ -297,19 +312,24 @@ main :: proc() {
     rl.InitAudioDevice()
     defer rl.CloseAudioDevice()
 
+    rl.SetAudioStreamBufferSizeDefault(10*4096)
+    
+    stream := rl.LoadAudioStream(SAMPLE_RATE, 32, 1)
+    defer rl.UnloadAudioStream(stream)
+    rl.SetAudioStreamCallback(stream, audio_stream_callback)
+
     default_wave := Wave{
         amplitutde=1,
         frequency=440,
         phase=0,
     }
-    waves: [dynamic]Wave = {}
     // square wave
     freq: f32 = 440.0
     amp: f32 = 1
-    for i in 0..<10 {
+    for i in 1..=10 {
         append(&waves, Wave{
-            frequency = freq * (auto_cast i*2.0 + 1),
-            amplitutde = amp / (auto_cast i*2.0 + 1),
+            frequency = freq * (auto_cast i*2.0 - 1),
+            amplitutde = amp / (auto_cast i*2.0 - 1),
             phase = 0.0,
         })
     }
@@ -329,10 +349,15 @@ main :: proc() {
         
         rl.ClearBackground(BACKGROUND_COLOR)
         
-        TOP_BAR_HEIGHT :: 40
+        TOP_BAR_HEIGHT :: 50
         if button({ PADDING, PADDING, 150, TOP_BAR_HEIGHT }, "+ Wave") {
             append(&waves, default_wave)
         }
+        SETTINGS_CONTROL_W :: 150
+        rl.DrawText("Amp scale", auto_cast width - 2*SETTINGS_CONTROL_W - 2*PADDING, PADDING, UI_LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
+        number_scroll_input({ width - 2*SETTINGS_CONTROL_W - 2*PADDING, PADDING + UI_LABEL_FONT_SIZE, SETTINGS_CONTROL_W, TOP_BAR_HEIGHT - UI_LABEL_FONT_SIZE }, &amp_scale)
+        rl.DrawText("Cycle Width", auto_cast width - SETTINGS_CONTROL_W - PADDING, PADDING, UI_LABEL_FONT_SIZE, UI_FOREGROUND_COLOR)
+        number_scroll_input({ width - SETTINGS_CONTROL_W - PADDING, PADDING + UI_LABEL_FONT_SIZE, SETTINGS_CONTROL_W, TOP_BAR_HEIGHT - UI_LABEL_FONT_SIZE }, &cycle_width, 10)
 
         WAVE_HEIGHT :: 100.0
         SCROLL_BAR_WIDTH :: 20
@@ -368,8 +393,13 @@ main :: proc() {
         waves_slice := waves[:]
         
         PLAY_BTN_WIDTH :: 100
-        if button({ PADDING, height - PADDING - WAVE_HEIGHT, PLAY_BTN_WIDTH, WAVE_HEIGHT }, "|> Play") {
-            play_waves_sum(samples_buffer[:], waves_slice)
+        if button({ PADDING, height - PADDING - WAVE_HEIGHT, PLAY_BTN_WIDTH, WAVE_HEIGHT/2 - PADDING/2 }, "|> Play") {
+            // play_waves_sum(samples_buffer[:], waves_slice)
+            rl.PlayAudioStream(stream)
+        }
+        if button({ PADDING, height - PADDING - WAVE_HEIGHT/2 + PADDING/2, PLAY_BTN_WIDTH, WAVE_HEIGHT/2 - PADDING/2 }, "O Stop") {
+            rl.StopAudioStream(stream)
+            play_head = 0.0
         }
 
         draw_wave({ 2*PADDING + PLAY_BTN_WIDTH, height - PADDING - WAVE_HEIGHT, width - 3*PADDING - PLAY_BTN_WIDTH, WAVE_HEIGHT }, sample_waves_sum, &waves_slice, rl.WHITE, cycle_width, amp_scale)
